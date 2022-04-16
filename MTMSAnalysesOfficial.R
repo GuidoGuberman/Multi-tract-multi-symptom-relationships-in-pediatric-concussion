@@ -3618,8 +3618,6 @@ p1
 
 
 #Scatter 2
-#Since there's a graphical outlier in x_1, I'll remove it here (see line below). Remember that it's for illustrative purposes only, we're not actually removing it for any analyses
-# all.data.pc2.psych<-all.data.pc2.psych[all.data.pc2.psych$X_1<20,]
 
 #Create color column
 all.data.pc2$psych_col<-ifelse(all.data.pc2[,c("ksads_14_853_p")]==1,"black","turquoise")
@@ -3653,7 +3651,6 @@ p1
 
 #PLSC1_LF7
 all.data.pc1$psych_col<-ifelse(all.data.pc1[,c("ksads_14_853_p")]==1,"black","greenyellow")
-#NOTE: removing one outlier for visualization purposes only. Not removed for the actual analyses.
 
 cords<-c("X_7","Y_7")
 p1<-ggplot(all.data.pc1[all.data.pc1$set==1&all.data.pc1$X_7<7,], aes(x=X_7*-1, y=Y_7*-1))+
