@@ -1,0 +1,711 @@
+#!/bin/bash
+rootdir=$1
+unzip_flag=$2
+convert_flag=$3
+organize_flag=$4
+GE_flag=$5
+Philips_flag=$6
+Philips_flag2=$7
+final_organize_flag=$8
+dimension_check_flag=$9
+
+scans=(anat dwi fmap)
+#####################################################################
+#####################################################################
+#####################################################################
+if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ] || [ -z "$5" ] || [ -z "$6" ] || [ -z "$7" ]
+  then
+    echo "Insufficient arguments"
+    echo "Positional arguments: rootdir unzip_flag convert_flag GE_flag Philips_flag"
+    echo "rootdir                -Directory containing the subject folders"
+    echo "unzip_flag             -Flag to unzip or not; -u if unzip, -n if not"
+    echo "convert_flag           -Flag to run dcm2bids"
+    echo "organize_flag          -Organize flag"
+    echo "GE_flag                -Flag to take GE 'FM' and extract the first b0"
+    echo "Philips_flag           -Flag to take the two DWI runs form Philips and concatenate them (and their bvals/bvecs)"
+    echo "Philips_flag2          -Flag to extract Mutual Information measures from the Philips b0s to determine the PE polarity"
+    echo "final_organize_flag    -Flag to copy the final files to a directory to prepare for upload"
+    exit 1
+fi
+
+#####################################################################
+#####################################################################
+#####################################################################
+
+#Unzip the tar files
+if [ ! -z "$rootdir" ] && [ "$unzip_flag" = "-y" ] && [ "$convert_flag" = "-n" ] && [ "$organize_flag" = "-n" ] && [ "$GE_flag" = "-n" ] && [ "$Philips_flag" = "-n" ] && [ "$Philips_flag2" = "-n" ] && [ "$final_organize_flag" = "-n" ] && [ "$dimension_check_flag" = '-n' ]
+then
+  # cd "$rootdir"/raw_files
+  cd "$rootdir"
+  for sub in submission_*
+  do
+    cd "$rootdir"/"$sub"
+    mv * "$rootdir"/
+    cd "$rootdir"
+  done
+
+  cd "$rootdir"
+  for file in *.tgz
+  do
+    echo "Unzipping"
+
+    tar -zxf "$file" -C "$rootdir"
+  done
+  exit 1
+fi
+
+#####################################################################
+#####################################################################
+#####################################################################
+
+#Run dcm2bids
+if [ ! -z "$rootdir" ] && [ "$unzip_flag" = "-n" ] && [ "$convert_flag" = "-y" ] && [ "$organize_flag" = "-n" ] && [ "$GE_flag" = "-n" ] && [ "$Philips_flag" = "-n" ] && [ "$Philips_flag2" = "-n" ] && [ "$final_organize_flag" = "-n" ] && [ "$dimension_check_flag" = '-n' ]
+then
+  echo "Conversion"
+  cd "$rootdir"
+  # rm -r BIDS
+  # mkdir BIDS
+  # for subject in sub*
+  # do
+  while read subject; #Correction for an error with GE scans that slipped through
+  do
+      cd "$rootdir"/"$subject"
+      #08/10/2020: I'm troubleshooting some issues, turns out the philips scans are no longer reversed
+
+        echo "Converting dcm2bids for $subject"
+        # Note: this section is performed because dcm2bids doesn't seem to be finding the correct bvals/bvecs. But ABCD provides bvals/bvecs
+        # in the compressed files.
+
+        dcm2bids -d "$rootdir"/"$subject" -p "$subject" -c "$rootdir"/config.json -o "$rootdir"/BIDS #conversion
+
+          echo "Getting the correct bvals/bvecs (dwi) for $subject"
+          ls "$rootdir"/"$subject"/ses-baselineYear1Arm1/dwi |grep .bval > "$rootdir"/"$subject"/ses-baselineYear1Arm1/"$scan"/tmp1.txt #temporary file to handle multiple bvals
+          ls "$rootdir"/"$subject"/ses-baselineYear1Arm1/dwi |grep .bvec > "$rootdir"/"$subject"/ses-baselineYear1Arm1/"$scan"/tmp2.txt #temporary file to handle multiple bvecs
+
+
+          rm "$rootdir"/BIDS/"$subject"/dwi/*.bval
+          rm "$rootdir"/BIDS/"$subject"/dwi/*.bvec
+
+          while read line; do
+            cp "$rootdir"/"$subject"/ses-baselineYear1Arm1/dwi/"$line" "$rootdir"/BIDS/"$subject"/dwi/"$line"
+          done < "$rootdir"/"$subject"/ses-baselineYear1Arm1/"$scan"/tmp1.txt
+
+          while read line; do
+            cp "$rootdir"/"$subject"/ses-baselineYear1Arm1/dwi/"$line" "$rootdir"/BIDS/"$subject"/dwi/"$line"
+          done < "$rootdir"/"$subject"/ses-baselineYear1Arm1/"$scan"/tmp2.txt
+
+        mv "$rootdir"/BIDS/tmp_dcm2bids "$rootdir"/BIDS/"$subject"/tmp_dcm2bids
+
+  # done
+done <"$rootdir"/GE_bval_problems.txt
+fi
+
+#####################################################################
+#####################################################################
+#####################################################################
+
+if [ ! -z "$rootdir" ] && [ "$unzip_flag" = "-n" ] && [ "$convert_flag" = "-n" ] && [ "$organize_flag" = "-y" ] && [ "$GE_flag" = "-n" ] && [ "$Philips_flag" = "-n" ] && [ "$Philips_flag2" = "-n" ] && [ "$final_organize_flag" = "-n" ] && [ "$dimension_check_flag" = '-n' ]
+then
+  echo "Organizing"
+  cd "$rootdir"/BIDS
+  rm "$rootdir"/BIDS/image_info_BIDS.txt
+  #Write column headers into a text file
+  echo "subjectkey PhaseEncodingDirection Manufacturer SeriesInstanceUID StudyInstanceUID ProtocolName FileName" >"$rootdir"/BIDS/image_info_BIDS.txt
+  for subject in sub*
+  do
+    echo "$subject"
+    for scan in "${scans[@]}"
+    do
+      cd "$rootdir"/BIDS/"$subject"
+      if [ "$scan" = "anat" ] # just for T1 scans
+      then
+        # List all files that don't contain .nii.gz or .txt (so just .json, .bvals, .bvecs)
+        ls "$rootdir"/BIDS/"$subject"/"$scan" |grep -v -e ".nii.gz" -e ".txt" > "$rootdir"/BIDS/"$subject"/"$scan"/tmp1.txt
+        while read line; do
+          # use 'jq' to read json sidecars
+          # echo `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.PatientName' -r` 'NA' \
+          # `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.Manufacturer' -r` \
+          # `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.SeriesInstanceUID' -r` \
+          # `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.StudyInstanceUID' -r` \
+          # `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.ProtocolName' -r` \
+          # $line >> "$rootdir"/BIDS/image_info_BIDS.txt
+
+          echo $subject 'NA' \
+          `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.Manufacturer' -r` \
+          `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.SeriesInstanceUID' -r` \
+          `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.StudyInstanceUID' -r` \
+          `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.ProtocolName' -r` \
+          $line >> "$rootdir"/BIDS/image_info_BIDS.txt
+        done < "$rootdir"/BIDS/"$subject"/"$scan"/tmp1.txt
+        rm "$rootdir"/BIDS/"$subject"/"$scan"/tmp1.txt
+
+      else # for dwi and 'fmap'
+        ls "$rootdir"/BIDS/"$subject"/"$scan" |grep -v -e ".nii.gz" -e ".txt" -e ".bval" -e ".bvec" > "$rootdir"/BIDS/"$subject"/"$scan"/tmp1.txt
+        while read line; do
+          # For each file, find manufacturer
+          echo `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.Manufacturer' -r` > \
+          "$rootdir"/BIDS/"$subject"/"$scan"/tmp2.txt
+          while read line2; do
+            if [ "$line2" = "Philips" ]
+            then
+              # If Philips, then use PEA
+              # echo `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.PatientName' -r` \
+              # `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.PhaseEncodingAxis' -r` \
+              # `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.Manufacturer' -r` \
+              # `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.SeriesInstanceUID' -r` \
+              # `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.StudyInstanceUID' -r` \
+              # `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.ProtocolName' -r` \
+              # $line >> "$rootdir"/BIDS/image_info_BIDS.txt
+
+              echo $subject \
+              `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.PhaseEncodingAxis' -r` \
+              `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.Manufacturer' -r` \
+              `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.SeriesInstanceUID' -r` \
+              `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.StudyInstanceUID' -r` \
+              `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.ProtocolName' -r` \
+              $line >> "$rootdir"/BIDS/image_info_BIDS.txt
+
+            else
+              # # If not Philips, then use PED
+              # echo `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.PatientName' -r` \
+              # `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.PhaseEncodingDirection' -r` \
+              # `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.Manufacturer' -r` \
+              # `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.SeriesInstanceUID' -r` \
+              # `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.StudyInstanceUID' -r` \
+              # `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.ProtocolName' -r` \
+              # $line >> "$rootdir"/BIDS/image_info_BIDS.txt
+
+              # If not Philips, then use PED
+              echo $subject \
+              `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.PhaseEncodingDirection' -r` \
+              `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.Manufacturer' -r` \
+              `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.SeriesInstanceUID' -r` \
+              `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.StudyInstanceUID' -r` \
+              `cat "$rootdir"/BIDS/"$subject"/"$scan"/"$line" | jq '.ProtocolName' -r` \
+              $line >> "$rootdir"/BIDS/image_info_BIDS.txt
+
+            fi
+          done < "$rootdir"/BIDS/"$subject"/"$scan"/tmp2.txt
+        done < "$rootdir"/BIDS/"$subject"/"$scan"/tmp1.txt
+        rm "$rootdir"/BIDS/"$subject"/"$scan"/tmp1.txt
+        rm "$rootdir"/BIDS/"$subject"/"$scan"/tmp2.txt
+      fi
+    done
+  done
+fi
+
+#####################################################################
+#####################################################################
+#####################################################################
+
+if [ ! -z "$rootdir" ] && [ "$unzip_flag" = "-n" ] && [ "$convert_flag" = "-n" ] && [ "$organize_flag" = "-n" ] && [ "$GE_flag" = "-y" ] && [ "$Philips_flag" = "-n" ] && [ "$Philips_flag2" = "-n" ] && [ "$final_organize_flag" = "-n" ] && [ "$dimension_check_flag" = '-n' ]
+then
+  echo "extracting b0 from GE"
+  cd "$rootdir"/BIDS
+  mkdir "$rootdir"/BIDS/extra
+  for subject in sub*
+  do
+
+    mkdir "$rootdir"/BIDS/extra/"$subject"
+    mkdir "$rootdir"/BIDS/extra/"$subject"/fmap
+    cd "$rootdir"/BIDS/"$subject"/fmap
+
+    # List all .json files
+    ls *.json|cut -f1 -d. > "$rootdir"/BIDS/"$subject"/fmap/tmp1.txt
+
+    while read line;
+    do
+      scanner="nothing"
+      scanner=`cat "$rootdir"/BIDS/"$subject"/fmap/"$line".json | jq '.Manufacturer' -r`
+
+      if [ "$scanner" = "GE" ]
+      then
+        echo "$subject"
+
+        mv "$rootdir"/BIDS/extra/"$subject"/fmap/*.nii.gz "$rootdir"/BIDS/"$subject"/fmap/
+
+        # Split image into individual volumes
+        fslsplit "$rootdir"/BIDS/"$subject"/fmap/"$line".nii.gz
+        # Move image to extra file
+        mv "$rootdir"/BIDS/"$subject"/fmap/"$line".nii.gz "$rootdir"/BIDS/extra/"$subject"/fmap/"$line".nii.gz
+        # Name the first volume
+        mv "$rootdir"/BIDS/"$subject"/fmap/vol0000.nii.gz "$rootdir"/BIDS/"$subject"/fmap/"$line".nii.gz
+        # Move the bvals and bvecs that came with the b0s to extra
+        mv "$rootdir"/BIDS/"$subject"/fmap/"$line".bval "$rootdir"/BIDS/extra/"$subject"/fmap/"$line".bval
+        mv "$rootdir"/BIDS/"$subject"/fmap/"$line".bvec "$rootdir"/BIDS/extra/"$subject"/fmap/"$line".bvec
+        # Move all other volumes to extra
+        mv "$rootdir"/BIDS/"$subject"/fmap/vol* "$rootdir"/BIDS/extra/"$subject"/fmap/
+
+      fi
+    done < "$rootdir"/BIDS/"$subject"/fmap/tmp1.txt
+    rm "$rootdir"/BIDS/"$subject"/fmap/tmp1.txt
+
+    cd "$rootdir"/BIDS/"$subject"/dwi
+    ls *.json|cut -f1 -d. > "$rootdir"/BIDS/"$subject"/dwi/tmp1.txt
+
+    while read line;
+    do
+      scanner="nothing"
+      scanner=`cat "$rootdir"/BIDS/"$subject"/dwi/"$line".json | jq '.Manufacturer' -r`
+      if [ "$scanner" = "GE" ]
+      then
+        if [ 0 -eq $(ls *.nii.gz 2>/dev/null | wc -w) ]
+        # $(ls *.nii.gz 2>/dev/null | wc -w) is a complicated way to check for the number of files.
+        # If there are no GE files, something that might happen if the function screwed something up
+        then
+          mv  "$rootdir"/BIDS/extra/"$subject"/dwi/"$line".nii.gz "$rootdir"/BIDS/"$subject"/dwi/"$line".nii.gz
+          # Move back the .nii.gz; This statement was included if this part needs to be run again
+        fi
+          # 4th dimension (gives the number of volumes)
+          nvols=`mrinfo -size "$rootdir"/BIDS/"$subject"/dwi/"$line".nii.gz |cut -f4 -d' '`
+      if [ "$nvols" -eq 104 ]
+      then
+        echo "$subject has extra volume"
+        # Split image into volumes
+        fslsplit "$rootdir"/BIDS/"$subject"/dwi/"$line".nii.gz
+        # Move initial image
+        mv "$rootdir"/BIDS/"$subject"/dwi/"$line".nii.gz "$rootdir"/BIDS/extra/"$subject"/dwi/"$line".nii.gz
+        # Remove first b0
+        rm "$rootdir"/BIDS/"$subject"/dwi/vol0000.nii.gz
+        # Concatenate all volumes (now will have one less)
+        mrcat "$rootdir"/BIDS/"$subject"/dwi/vol0* "$rootdir"/BIDS/"$subject"/dwi/"$line".nii.gz -force
+        # Remove the separate volumes
+        rm "$rootdir"/BIDS/"$subject"/dwi/vol0*
+      fi
+    fi
+    done < "$rootdir"/BIDS/"$subject"/dwi/tmp1.txt
+    rm "$rootdir"/BIDS/"$subject"/dwi/tmp1.txt
+
+done
+fi
+
+#####################################################################
+#####################################################################
+#####################################################################
+#Concatenate Philips DWI and bvals/bvecs
+#Note: this part needs to be done after the Mutual Information one
+if [ ! -z "$rootdir" ] && [ "$unzip_flag" = "-n" ] && [ "$convert_flag" = "-n" ] && [ "$organize_flag" = "-n" ] && [ "$GE_flag" = "-n" ] && [ "$Philips_flag" = "-y" ] || [ "$Philips_flag" = "-yy" ] && [ "$Philips_flag2" = "-n" ] && [ "$final_organize_flag" = "-n" ] && [ "$dimension_check_flag" = '-n' ]
+then
+  echo "concatenating Philips scans"
+  cd "$rootdir"/BIDS
+  mkdir "$rootdir"/BIDS/extra
+  for subject in sub*
+# CC_grp=(sub-NDARINVWCLDPKM7)
+  # CC_grp=(sub-NDARINVH37LMD3K sub-NDARINVKCPJBCMV sub-NDARINVNVHZ41TU sub-NDARINVWCLDPKM7)
+  # for subject in "${CC_grp[@]}"
+  do
+    if [ "$Philips_flag" = "-y" ]
+    then
+      echo "$subject"
+      mkdir "$rootdir"/BIDS/extra/"$subject"
+      mkdir "$rootdir"/BIDS/extra/"$subject"/dwi
+      cd "$rootdir"/BIDS/"$subject"/dwi
+
+      # scanner=`cat "$rootdir"/BIDS/"$subject"/dwi/"$subject"_run-01_dwi.json | jq '.Manufacturer' -r`
+      cnt_bvals=`ls *json|wc -l`
+
+      echo "$cnt_bvals"
+      if [ $cnt_bvals -gt 1 ];
+      then
+        scanner=`cat "$rootdir"/BIDS/"$subject"/dwi/"$subject"_run-01_dwi.json | jq '.Manufacturer' -r`
+      elif [ $cnt_bvals -eq 1 ];
+        then
+          scanner=`cat "$rootdir"/BIDS/"$subject"/dwi/"$subject"_dwi.json | jq '.Manufacturer' -r` #Temporary: if the dwi concat worked but the bvals/bvecs were not copied over properly, it will cause the main cat code to not run (because json file will have been renamed) but the alternative version
+      #not work either because the bvals/bvecs were not copied over. That's why I'm adding this line.
+      fi
+        if [ "$scanner" = "Philips" ]
+        then
+        #concatenate runs using mrtrix
+        ########Note: so far it only concantenates run 01 and run 02, which means if there are 03 and 04, it ignores them. I haven't had issues but this part should still be checked [ ]
+        # mrcat "$rootdir"/BIDS/"$subject"/dwi/"$subject"_run-03_dwi.nii.gz "$rootdir"/BIDS/"$subject"/dwi/"$subject"_run-01_dwi.nii.gz "$rootdir"/BIDS/"$subject"/dwi/"$subject"_dwi.nii.gz -force
+        #Note: concatenating them in reverse (to get 02 be first).
+        # 06/10/2020: But if I remember correctly the bvals and bvecs were not reversed (in "run" order)
+        #circuitous way of concatenating the bvals
+        rm "$subject"_rows.bval
+        rm tmp2*
+        # Listing all bvals.
+        # Note: If there were more scans, there would be more bvals/bvecs than volumes
+        ls *run*.bval| cut -f2- -d_ | cut -f1 -d. > "$rootdir"/BIDS/extra/"$subject"/dwi/tmp1.txt
+        while read line;
+        do
+          # Change from columns to rows
+          tr ' ' '\n' < "$rootdir"/BIDS/"$subject"/dwi/"$subject"_"$line".bval > "$rootdir"/BIDS/"$subject"/dwi/tmp2_"$line".txt
+        done < "$rootdir"/BIDS/extra/"$subject"/dwi/tmp1.txt
+
+        while read line;
+        do
+          while IFS= read -r line2 || [ -n "$line2" ];
+          do
+            # A way to read the file with bvals, but ensuring that the last line ends with \n
+            echo "$line2" >> "$subject"_rows.bval
+          done < tmp2_"$line"_rows.txt
+        done < "$rootdir"/BIDS/extra/"$subject"/dwi/tmp1.txt
+
+        echo `cat "$subject"_rows.bval` > "$rootdir"/BIDS/"$subject"/dwi/"$subject".bval
+
+        rm "$rootdir"/BIDS/extra/"$subject"/dwi/tmp1.txt
+        rm "$rootdir"/BIDS/"$subject"/dwi/*_rows.bval
+
+        #circuitous way of concatenating the bvecs
+        files=`ls *run*.bvec`
+        paste -d ' ' $files > "$subject".bvec
+
+
+        # rm "$rootdir"/BIDS/extra/"$subject"/dwi/tmp1.txt
+        # Take one of the json files. They're the same.
+        cp "$subject"_run-01_dwi.json "$subject"_dwi.json
+
+        # More the rest of the things to extra
+        mv *run*.bval "$rootdir"/BIDS/extra/"$subject"/dwi/ #Putting *run* because it's the only thing that differentiates it from the newly created file, which doesn't contain "run"
+        mv *run*.bvec "$rootdir"/BIDS/extra/"$subject"/dwi/
+        mv "$subject"_run-*_dwi.json "$rootdir"/BIDS/extra/"$subject"/dwi/
+        mv "$subject"_run-*_dwi.nii.gz "$rootdir"/BIDS/extra/"$subject"/dwi/
+        fi
+    elif [ "$Philips_flag" = "-yy" ]
+    then
+      # echo "$subject"
+      #OK SO THERE"S AN IMPORTANT PROBLEM HERE. IF IT CAN"T FIND THE JSON FILE IN EXTRA, IT JUST INHERITS THE SCANNER VALUE FROM A PREVIOUS PHILIPS SCAN
+      scanner="nothing"
+      cd "$rootdir"/BIDS/extra/"$subject"/dwi
+      cnt_bvals=`ls *json|wc -l`
+      # echo "$cnt_bvals"
+      if [ $cnt_bvals -gt 1 ];
+      then
+        scanner=`cat "$rootdir"/BIDS/extra/"$subject"/dwi/"$subject"_run-01_dwi.json | jq '.Manufacturer' -r`
+      elif [ $cnt_bvals -eq 1 ];
+      then
+        scanner=`cat "$rootdir"/BIDS/extra/"$subject"/dwi/"$subject"_dwi.json | jq '.Manufacturer' -r` #Temporary: if the dwi concat worked but the bvals/bvecs were not copied over properly, it will cause the main cat code to not run (because json file will have been renamed) but the alternative version
+      fi
+      if [ "$scanner" = "Philips" ]
+      then
+        echo "Alternative Philips concatenation (for when something failed the first time)"
+        echo "$subject"
+        # cd "$rootdir"/BIDS/extra/"$subject"/dwi
+        # mkdir "$rootdir"/BIDS/extra/"$subject"/dwi/incomplete_scans
+        rm "$subject"_rows.bval
+        rm tmp2_* # Have to do this to correct for a mistake I made before. Not necessary in the final script.
+        rm *rows*
+
+        ls "$subject"_run*.bval | cut -f2- -d_ | cut -f1 -d. > tmp1.txt
+
+        #First look for incomplete scans
+        echo "looking for incomplete scans"
+        #This function renames the incomplete scans. Will be done temporarily, and will be renamed back (to be able to rerun if it didn't work)
+        while read line;
+        do
+          bval_count=`cat "$subject"_"$line".bval|wc -w`
+          if [ $bval_count -lt 51 ]; #If there are less than 51 bvals for a dwi
+          then
+            echo "found incomplete scan for subject $subject, flagging"
+            mv "$subject"_"$line".bval tmptmp_"$subject"_"$line".bval
+            mv "$subject"_"$line".bvec tmptmp_"$subject"_"$line".bvec
+            mv "$subject"_"$line".json tmptmp_"$subject"_"$line".json
+            mv "$subject"_"$line".nii.gz tmptmp_"$subject"_"$line".nii.gz
+          fi
+        done<tmp1.txt
+
+        #Update the tmp1 file to avoid looking for the incomplete scan. If there aren't any, tmp1 will stay as is
+        echo "Updating file list for complete scans"
+        ls "$subject"_run*.nii.gz > tmp1.txt
+        #Second, from all the complete scans, pick the last 2 highest numbers (will be in alphanumerical order). This should work even if there are only 2.
+        cat tmp1.txt |tail -n2 >tmp3.txt
+        #Concatenate them. Notice that it's written to the main dwi directory
+        mrcat `cat tmp3.txt` "$rootdir"/BIDS/"$subject"/dwi/"$subject"_dwi.nii.gz -force
+
+
+        #Update the tmp1 file to avoid looking for the incomplete scan. If there aren't any, tmp1 will stay as is
+        echo "Handling bvals"
+        ls "$subject"_run*.bval | cut -f2- -d_ | cut -f1 -d. > tmp1.txt
+        cat tmp1.txt |tail -n2 >tmp3.txt
+        #Concatenate them. Notice that it's written to the main dwi directory
+        while read line;
+        do
+          tr ' ' '\n' < "$subject"_"$line".bval > tmp2_"$line".txt;
+        done < tmp3.txt
+        rm "$subject"_rows.bval
+        while read line;
+        do
+          while IFS= read -r line2 || [ -n "$line2" ]; #08/10/2020: TRY RUNNING THIS LINE HERE AND THEN CHECK IF BVALS ARE STILL REVERSED AS THEY WERE BEFORE
+          do
+            echo "$line2" >> "$subject"_rows.bval;
+          done < tmp2_"$line".txt;
+        done < tmp3.txt
+        # rm tmp*
+        echo `cat "$subject"_rows.bval` > "$rootdir"/BIDS/"$subject"/dwi/"$subject".bval
+
+        #Now copy over one of the json files, they are all the same
+        echo "Handling json files"
+        jsonfile=`ls "$subject"_run*.json|tail -n1` #just pick the last of the json file names
+        cp "$jsonfile" "$rootdir"/BIDS/"$subject"/dwi/"$subject"_dwi.json
+
+        #Finally, handle the bvecs
+        echo "Handling bvecs"
+        ls "$subject"_run*.bvec > tmp1.txt
+        files=`cat tmp1.txt |tail -n2`
+        paste -d ' ' $files > "$rootdir"/BIDS/"$subject"/dwi/"$subject".bvec
+
+        #Now rename the renamed files back to their original name
+        echo "Renaming flagged files to their original names"
+        ls tmptmp_*>tmp4.txt
+        while read line;
+        do
+          newname=`echo "$line"|cut -f2- -d_` #Removes the 'tmptmp' part of the name
+          mv "$line" "$newname"
+        done<tmp4.txt
+
+      fi
+    fi
+done
+fi
+
+#####################################################################
+#####################################################################
+#####################################################################
+#Find rev_b0 using mutual information
+if [ ! -z "$rootdir" ] && [ "$unzip_flag" = "-n" ] && [ "$convert_flag" = "-n" ] && [ "$organize_flag" = "-n" ] && [ "$GE_flag" = "-n" ] && [ "$Philips_flag" = "-n" ] && [ "$Philips_flag2" = "-y" ] && [ "$final_organize_flag" = "-n" ] && [ "$dimension_check_flag" = '-n' ]
+then
+  echo "extracting mutual information to detect rev_b0 in Philips scans"
+  cd "$rootdir"/BIDS
+  mkdir "$rootdir"/BIDS/extra
+  rm "$rootdir"/BIDS/extra/mutual_info_Philips.txt
+  for subject in sub*
+  do
+    echo "$subject"
+    mkdir "$rootdir"/BIDS/extra/"$subject"
+    mkdir "$rootdir"/BIDS/extra/"$subject"/dwi
+    mkdir "$rootdir"/BIDS/extra/"$subject"/dwi/tests
+    cd "$rootdir"/BIDS/"$subject"/dwi
+    scanner=`cat "$rootdir"/BIDS/"$subject"/fmap/"$subject"_run-01_epi.json | jq '.Manufacturer' -r`
+
+    #Pass through the sidecars to ensure all names match
+
+
+    if [ "$scanner" = "Philips" ]
+    then
+      # Another complicated way of getting bvals and bvecs
+      bval="*.bval"
+      bvec="*.bvec"
+      bval_files=( "$rootdir"/BIDS/"$subject"/dwi/$bval )
+      bvec_files=( "$rootdir"/BIDS/"$subject"/dwi/$bvec )
+      tgt_bval="${bval_files[0]}"
+      tgt_bvec="${bvec_files[0]}"
+
+      rm "$rootdir"/BIDS/extra/"$subject"/dwi/tests/"$subject".bval
+      rm "$rootdir"/BIDS/extra/"$subject"/dwi/tests/"$subject".bvec
+
+      cp "$tgt_bval" "$rootdir"/BIDS/extra/"$subject"/dwi/tests/"$subject".bval
+      cp "$tgt_bvec" "$rootdir"/BIDS/extra/"$subject"/dwi/tests/"$subject".bvec
+
+      # Extract b0 from DWI
+      scil_extract_b0.py "$rootdir"/BIDS/"$subject"/dwi/"$subject"_run-02_dwi.nii.gz \
+      "$rootdir"/BIDS/extra/"$subject"/dwi/tests/"$subject".bval \
+      "$rootdir"/BIDS/extra/"$subject"/dwi/tests/"$subject".bvec \
+      "$rootdir"/BIDS/extra/"$subject"/dwi/tests/run_02_b0.nii.gz
+
+      echo "Getting the mutual information for $subject"
+      cd "$rootdir"/BIDS/"$subject"/fmap/
+      ls "$subject"_run-*_epi.nii.gz |cut -f2 -d_ > "$rootdir"/BIDS/extra/"$subject"/dwi/tests/tmp1.txt #temporary file to handle multiple b0s
+     # finds all _epi images, finds the delimiter '_', and only provides the second field ('run_*')
+
+      while read line; do
+        # Linear registration of b0 images to the extracted b0
+        flirt -in "$rootdir"/BIDS/"$subject"/fmap/"$subject"_"$line"_epi.nii.gz \
+        -ref "$rootdir"/BIDS/extra/"$subject"/dwi/tests/run_02_b0.nii.gz \
+        -out "$rootdir"/BIDS/extra/"$subject"/dwi/tests/"$subject"_"$line"_epi_in_b0_02.nii.gz -v
+
+        Protocol=`cat "$rootdir"/BIDS/"$subject"/fmap/"$subject"_"$line"_epi.json | jq '.ProtocolName' -r`
+        # Write results to a file
+        echo "$subject" "$subject"_"$line"_epi.nii.gz "$Protocol" `mutual_information.py "$rootdir"/BIDS/extra/"$subject"/dwi/tests/"$subject"_"$line"_epi_in_b0_02.nii.gz \
+        "$rootdir"/BIDS/extra/"$subject"/dwi/tests/run_02_b0.nii.gz` \
+        >> "$rootdir"/BIDS/extra/mutual_info_Philips.txt
+        # NOTE: this command calls the mutual_information.py script. It was adapted from a script written by Matthew Brett
+        # https://matthew-brett.github.io/teaching/mutual_information.html
+      done < "$rootdir"/BIDS/extra/"$subject"/dwi/tests/tmp1.txt
+      rm "$rootdir"/BIDS/extra/"$subject"/dwi/tests/tmp1.txt
+
+      fi
+  done
+fi
+
+
+#####################################################################
+#####################################################################
+#####################################################################
+
+if [ ! -z "$rootdir" ] && [ "$unzip_flag" = "-n" ] && [ "$convert_flag" = "-n" ] && [ "$organize_flag" = "-n" ] && [ "$GE_flag" = "-n" ] && [ "$Philips_flag" = "-n" ] && [ "$Philips_flag2" = "-n" ] && [ "$final_organize_flag" = "-y" ] && [ "$dimension_check_flag" = '-n' ]
+then
+  echo "Copying final files to prepare for data transfer"
+  cd "$rootdir"/BIDS
+  # rm -r "$rootdir"/BIDS/final_data_for_upload/
+  # mkdir "$rootdir"/BIDS/final_data_for_upload
+
+  while read line; do
+
+    subject=`awk -F " " '{print $1}' <<< "$line"`
+    jsonfilename=`awk -F " " '{print $2}' <<< "$line"`
+    filename=`awk -F " " '{print $3}' <<< "$line"`
+    protocol=`awk -F " " '{print $4}' <<< "$line"`
+
+    #CHECK HERE IF THEY ARE PHILIPS. THIS IS A CORRECTION BECAUSE PHILIPS SCANS HAD AN ISSUE SO NOW I ONLY NEED TO TRANSFER THEM
+    scanner="nothing"
+    scanner=`cat "$rootdir"/BIDS/"$subject"/dwi/"$jsonfilename" | jq '.Manufacturer' -r`
+    if [ "$scanner" = "Philips" ]
+    then
+    # mkdir "$rootdir"/BIDS/final_data_for_upload/"$subject"
+    # mkdir "$rootdir"/BIDS/final_data_for_upload/"$subject"/"$protocol"
+    cp "$rootdir"/BIDS/"$subject"/"$protocol"/"$filename" "$rootdir"/BIDS/final_data_for_upload/"$subject"/"$protocol"/"$filename"
+    cp "$rootdir"/BIDS/"$subject"/"$protocol"/"$jsonfilename" "$rootdir"/BIDS/final_data_for_upload/"$subject"/"$protocol"/"$jsonfilename"
+
+    if [ "$protocol" = 'dwi' ]
+    then
+      cd "$rootdir"/BIDS/"$subject"/"$protocol"
+
+      if [ 1 -lt $(ls *bval 2>/dev/null | wc -w) ]
+      then
+        bval="*.bval" # get bval files
+        bval_files=( $bval )
+        a=`echo "$filename" |cut -f2 -d_|cut -f2 -d-` # get the number of the dwi run that was selected
+        bval_file="${bval_files[`expr $a - 1`]}" # -1 because of 0 indexing. The entires selected from 'a' are ordered by their run
+        bvec="*.bvec"
+        bvec_files=( $bvec )
+        bvec_file="${bvec_files[`expr $a - 1`]}"
+        cp "$rootdir"/BIDS/"$subject"/"$protocol"/"$bval_file" "$rootdir"/BIDS/final_data_for_upload/"$subject"/"$protocol"/"$subject"_dwi.bval
+        cp "$rootdir"/BIDS/"$subject"/"$protocol"/"$bvec_file" "$rootdir"/BIDS/final_data_for_upload/"$subject"/"$protocol"/"$subject"_dwi.bvec
+        cd "$rootdir"/BIDS
+      elif [ 1 -eq $(ls *bval 2>/dev/null | wc -w) ]
+      then
+        cp "$rootdir"/BIDS/"$subject"/"$protocol"/*bval "$rootdir"/BIDS/final_data_for_upload/"$subject"/"$protocol"/"$subject"_dwi.bval
+        cp "$rootdir"/BIDS/"$subject"/"$protocol"/*bvec "$rootdir"/BIDS/final_data_for_upload/"$subject"/"$protocol"/"$subject"_dwi.bvec
+        cd "$rootdir"/BIDS
+      fi
+    fi
+  fi
+  done < "$rootdir"/BIDS/final_data_list.txt
+
+# Correct the json sidecars for Philips scans
+echo "Correcting json sidecards for Philips scans"
+  cd "$rootdir"/BIDS/final_data_for_upload
+  for subject in sub*;
+  do
+    echo "Checking subject $subject"
+
+    cd "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi
+
+    #Correcting "intededfor" fields and bvals in subjects with multiple runs
+    echo "Correcting json sidecars"
+    ls *.json |cut -f1 -d. > "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi/tmp2.txt
+    ls *.bval |cut -f1 -d. > "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi/tmp3.txt
+    ls *.bvec |cut -f1 -d. > "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi/tmp4.txt
+
+    cd "$rootdir"/BIDS/final_data_for_upload/"$subject"/fmap
+    ls *.json |cut -f1 -d. > "$rootdir"/BIDS/final_data_for_upload/"$subject"/fmap/tmp5.txt
+    cd "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi
+    while read line;
+    do
+      while read line4;
+      do
+      jq '.IntendedFor = "'$line'.nii.gz"' "$rootdir"/BIDS/final_data_for_upload/"$subject"/fmap/"$line4".json > "$rootdir"/BIDS/final_data_for_upload/"$subject"/fmap/tmp.json
+      mv "$rootdir"/BIDS/final_data_for_upload/"$subject"/fmap/tmp.json "$rootdir"/BIDS/final_data_for_upload/"$subject"/fmap/"$line4".json
+      done < "$rootdir"/BIDS/final_data_for_upload/"$subject"/fmap/tmp5.txt
+      while read line2;
+      do
+        while read line3;
+        do
+          mv "$line2".bval "$line".bval
+          mv "$line3".bvec "$line".bvec
+        done < "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi/tmp4.txt
+      done < "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi/tmp3.txt
+    done < "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi/tmp2.txt
+
+    rm "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi/tmp2.txt
+    rm "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi/tmp3.txt
+    rm "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi/tmp4.txt
+    rm "$rootdir"/BIDS/final_data_for_upload/"$subject"/fmap/tmp5.txt
+
+    #Correcting TRTs and PEDs for Philips scans
+    cd "$rootdir"/BIDS/final_data_for_upload/"$subject"/fmap
+    scanner=`cat "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi/"$subject"_*dwi.json | jq '.Manufacturer' -r`
+    if [ "$scanner" = "Philips" ]
+    then
+      echo "Correcting TRT and PED for subject $subject fmap"
+      ls *.json > "$rootdir"/BIDS/final_data_for_upload/"$subject"/fmap/tmp.txt
+      while read line;
+      do
+        jq '.TotalReadoutTime = "0.062"' "$rootdir"/BIDS/final_data_for_upload/"$subject"/fmap/"$line" > "$rootdir"/BIDS/final_data_for_upload/"$subject"/fmap/tmp.json
+        mv "$rootdir"/BIDS/final_data_for_upload/"$subject"/fmap/tmp.json "$rootdir"/BIDS/final_data_for_upload/"$subject"/fmap/"$line"
+      done < "$rootdir"/BIDS/final_data_for_upload/"$subject"/fmap/tmp.txt
+
+      while read line;
+      do
+        jq '.PhaseEncodingDirection = "j-"' "$rootdir"/BIDS/final_data_for_upload/"$subject"/fmap/"$line" > "$rootdir"/BIDS/final_data_for_upload/"$subject"/fmap/tmp.json
+        mv "$rootdir"/BIDS/final_data_for_upload/"$subject"/fmap/tmp.json "$rootdir"/BIDS/final_data_for_upload/"$subject"/fmap/"$line"
+      done < "$rootdir"/BIDS/final_data_for_upload/"$subject"/fmap/tmp.txt
+
+    fi
+  # done
+
+
+  cd "$rootdir"/BIDS/final_data_for_upload
+  # for subject in sub*;#I don't think I need another loop
+  # do
+  cd "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi
+    scanner=`cat "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi/*.json | jq '.Manufacturer' -r`
+    if [ "$scanner" = "Philips" ]
+    then
+      echo "Correcting TRT and PED for subject $subject dwi"
+      ls *.json |cut -f1 -d. > "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi/tmp.txt
+      while read line;
+      do
+        jq '.TotalReadoutTime = "0.062"' "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi/"$line".json > "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi/tmp.json
+        mv "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi/tmp.json "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi/"$line".json
+      done < "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi/tmp.txt
+
+      while read line;
+      do
+        jq '.PhaseEncodingDirection = "j"' "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi/"$line".json > "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi/tmp.json
+        mv "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi/tmp.json "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi/"$line".json
+      done < "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi/tmp.txt
+
+      rm "$rootdir"/BIDS/final_data_for_upload/"$subject"/dwi/tmp.txt
+
+    fi
+  done
+fi
+
+#####################################################################
+#####################################################################
+#####################################################################
+
+if [ ! -z "$rootdir" ] && [ "$unzip_flag" = "-n" ] && [ "$convert_flag" = "-n" ] && [ "$organize_flag" = "-n" ] && [ "$GE_flag" = "-n" ] && [ "$Philips_flag" = "-n" ] && [ "$Philips_flag2" = "-n" ] && [ "$final_organize_flag" = "-n" ] && [ "$dimension_check_flag" = '-y' ]
+then
+  echo "Verifying file dimensions"
+  cd "$rootdir"/BIDS
+  echo "subjectkey ImageType FileName_json FileName_nifti Obtained_Dim Manufacturer FileSize" >"$rootdir"/BIDS/extra/verifying_file_dimensions.txt
+  for subject in sub*;
+  do
+    cd "$rootdir"/BIDS/"$subject"
+    for scan in "${scans[@]}"
+    do
+      cd "$rootdir"/BIDS/"$subject"/"$scan"
+      ls *.nii.gz|cut -f1 -d. > "$rootdir"/BIDS/"$subject"/"$scan"/tmp.txt
+      while read line;
+      do
+        # for sub in sub-NDAR*;do cnt=`cat "$sub"/dwi/*.bval|wc -w`;if [ $cnt -lt 102 ] || [ $cnt -gt 105 ];then echo "$sub" "$cnt";fi;done #NOTE: THIS LINE SHOULD BE ADDED TO CHECK DIMS OF ALL DWIs SINCE I FOUND SOME SCANS WITH LESS THAN 103 VOLUMES
+        echo "$subject" "$scan" "$line.json" "$line.nii.gz" `mrinfo "$rootdir"/BIDS/"$subject"/"$scan"/"$line".nii.gz -ndim` `cat "$line".json|jq '.Manufacturer'` `du "$line".nii.gz |cut -f1`>>"$rootdir"/BIDS/extra/verifying_file_dimensions.txt
+      done < "$rootdir"/BIDS/"$subject"/"$scan"/tmp.txt
+      rm "$rootdir"/BIDS/"$subject"/"$scan"/tmp.txt
+    done
+  done
+fi
+
+
+
+##ADDING MORE DATA CHECKS AT THE END##
+# for sub in sub-NDARINV*;do bval=`cat "$sub"/dwi/*bval|wc -w`;dwidim=`cat "$sub"/dwi/*bvec|wc -w`;bvec=$( expr $dwidim / 3 );if [ ! $bval -eq $bvec ];then echo "$sub" "$bval" "$dwidim";fi;done
+# for sub in sub-NDARINV*;do bval=`cat "$sub"/dwi/*bval|wc -w`;if [ $bval -lt 102 ]||[ $bval -gt 105 ];then echo "$sub" "$bval";fi;done
+# for sub in sub-NDARINV*;do bvals=`cat "$sub"/dwi/*bval|wc -w`;bvals_u=`cat "$sub"/dwi/*.bval |rs -c' ' -C' ' -T|sort|uniq|wc -l`;if [ "$bvals_u" -lt 5 ];then scanner=`cat "$sub"/dwi/*.json|jq '.Manufacturer'`;echo "$sub" "$scanner" "$bvals" "$bvals_u";fi;done
+#or the one below if 'rs' function can't be found
+# for sub in sub-NDARINV*;do bvals=`cat "$sub"/dwi/*bval|wc -w`;bvals_u=`cat "$sub"/dwi/*.bval |tr ' ' '\n'|sort|uniq|wc -l`;if [ "$bvals_u" -lt 5 ];then scanner=`cat "$sub"/dwi/*.json|jq '.Manufacturer'`;echo "$sub" "$scanner" "$bvals" "$bvals_u";fi;done
+
+# while read sub;do bvalfiles=`ls "$sub"/ses-baselineYear1Arm1/dwi/*bval|wc`;echo "$sub" "$bvalfiles";done<BIDS/GE_bval_problems.txt
+# while read sub;do cp "$sub"/ses-baselineYear1Arm1/dwi/*bval BIDS/final_data_for_upload/"$sub"/dwi/"$sub"_dwi.bval;cp "$sub"/ses-baselineYear1Arm1/dwi/*bvec BIDS/final_data_for_upload/"$sub"/dwi/"$sub"_dwi.bvec;done<BIDS/GE_bval_problems.txt

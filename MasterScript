@@ -1,0 +1,264 @@
+#!/bin/bash
+##############################################################################################################
+#                                              USER INPUT
+# gen_dir=/Users/Guido/Desktop/GeneralData/ABCD
+gen_dir=/Users/Guido/Desktop/Projects/TP3Study/Data
+grp=1 #SHOULD BE 1: mTBI; 2: Harmonization Controls; 3:Matched Controls; 4: Twin Controls
+m_r_1=2 #Match ratio: an option for the Harmonization Controls, to select the ratio of initial group matching
+m_r_2=1 #Match ratio: an option for the Harmonization Controls, to select the ratio of second group matching
+mismatch_retry=3 #Number of times you want to retry random selection (Harmonization Controls)
+##############################################################################################################
+
+echo "
+########################################################################################
+            Multi-Tract Multi-Symptom Relationships in Pediatric Concussion
+      Guberman GI, Stojanovski S, Nishat E, Ptito A, Bdzok D, Wheeler A, Descoteaux M
+
+                                  _---~~(~~-_.__
+                                _{        )     )
+                              ,   ) -~~- ( ,-' ' )_
+                             (  ''-,_..''., )-- '_,)
+                            ( '' _)  (  -~( -_ ',  }
+                            (_-  _  ~_-~~~~',  ,' )
+                              '~ -^(    __;-,((()))
+                                    ~~~~ {_ -_(())
+                                           '\  }
+                                             { }      SJW
+
+
+#########################################################################################
+
+When using this code, please cite:
+
+Guberman, G. I., Stojanovski, S., Nishat, E., Ptito, A., Bzdok, D., Wheeler, A., & Descoteaux, M. (2022). Multi-tract multi-symptom relationships in pediatric concussions. eLife.
+
+"
+echo """
+Requirements:
+-gen_dir/GeneralData
+   |- abcd_tbi01.txt
+   |- abcd_mx01.txt
+   |- image03.txt
+   |- abcd_mri01.txt
+   |- abcd_ehis01.txt
+   |- abcd_tbss01.txt
+   |- abcd_ps01.txt
+   |- mriqcrp102.txt
+   |- abcd_ssphp01.txt
+   (note: see MasterScript.doc for details)
+
+R PACKAGES:
+ - MatchIt
+ - dplyr
+
+SCRIPTS (added to path):
+ - organize_ABCD_data
+ - Select_mTBI_Participants.R
+ - Select_HC_Participants.R
+ - flag_data_inconsistencies.R
+ - mutual_information.py
+ - Extract_DWIandT1Scans_s3links_Official.R
+ - downloadcmd (see MasterScript.doc for details)
+
+OTHER TOOLS:
+ - SCILPY (https://github.com/scilus/scilpy)
+ - MRtrix3 (https://www.mrtrix.org)
+ - FSL (https://fsl.fmrib.ox.ac.uk/fsl/fslwiki/)
+ - Rstudio (https://www.rstudio.com)
+ - NDA Download Manager (see MasterScript.doc for details)
+
+"""
+echo "Do you have all the requirements?"
+select yn in "Yes" "No"; do
+case $yn in
+  Yes ) echo "
+    Proceeding...
+ " ; \
+    proceed=1 ; \
+    break;;
+    No ) break;;
+esac
+done
+
+
+
+if [ ! -z "$gen_dir" ] && [ "$proceed" -eq 1 ] && [ "$grp" -eq 1 ] || [ "$grp" -eq 2 ] || [ "$grp" -eq 3 ] || [ "$grp" -eq 4 ]
+then
+for group in "${grp[@]}"
+do
+  # Creating and setting the output directory
+  if [ "$group" -eq 1 ]
+  then
+    mkdir "$gen_dir"/mTBI_Group
+    out_dir="$gen_dir"/mTBI_Group
+  elif [ "$group" -eq 2 ]
+  then
+    mkdir "$gen_dir"/Harmonization_Controls
+    out_dir="$gen_dir"/Harmonization_Controls
+  elif [ "$group" -eq 3 ]
+  then
+    mkdir "$gen_dir"/Matched_Controls
+    out_dir="$gen_dir"/Matched_Controls
+  elif [ "$group" -eq 4 ]
+  then
+    mkdir "$gen_dir"/Twin_Controls
+    out_dir="$gen_dir"/Twin_Controls
+  fi
+
+  #Selecting participants and doing initial check for missing data
+    echo "
+    ####################################################################
+          Selecting participants and checking for missing data and QC
+    ####################################################################
+    "
+    if [ "$group" -eq 1 ]
+    then
+      # Finds mTBI participants using OS-TBI-ID summary scores
+      Rscript "$gen_dir"/Scripts/Select_mTBI_Participants.R "$gen_dir"
+
+    elif [ "$group" -eq 2 ]
+    then
+      # Finds a pool of healthy participants at each site, matched for age, sex, handedness, and IQ
+      Rscript "$gen_dir"/Scripts/Select_HC_Participants.R "$gen_dir" "$group" "$m_r_1"
+
+    elif [ "$group" -eq 3 ]
+    then
+      echo "Empty"
+      # Fill in once you start working on Matched Control group
+
+    elif [ "$group" -eq 4 ]
+    then
+      echo "Empty"
+      # Fill in once you start working on Matched Control group
+    fi
+
+    # Does first pass cleaning (checks for missing baseline imaging data)
+    Rscript "$gen_dir"/Scripts/Extract_DWIandT1Scans_s3links_Official.R "$gen_dir" "$group"
+
+  # Download images
+  # This part uses the downloadcmd script provided by NDA; to set it up, read MasterScript.docx provided
+  echo """
+  You must now download images from cloud
+  Open Download Manager
+  Enter NDA username and password
+  Click on Tools -> Generate AWS Credentials
+  On another command window, type vi ~/.NDATools/settings.cfg
+  Copy the Access Key and Secret Key in appropriate place
+  Exit (press esc and then ':x')
+  Then return to this window and type '1' to proceed
+  """
+  select yn in "Yes" "No"; do
+  case $yn in
+    Yes ) echo "
+  ###################################################################
+   Downloading data ... go get a coffee, this might take a while
+   ####################################################################
+   " ; \
+      mkdir "$out_dir"/Data ; \
+      downloadcmd "$out_dir"/S3links_corrections.txt -t -d "$out_dir"/Data -v -r "$out_dir"/Data; \
+      break;;
+      No ) break;;
+
+      # for file in *.tgz;do cat ../S3links_corrections.txt|grep -v "$file">../tmp.txt;mv ../tmp.txt ../S3links_corrections.txt;done #Correction line for when download is insufficient
+  esac
+  done
+
+  # Unzip files
+  # The majority of these steps use the organize_ABCD_data script provided
+  echo "
+  #############################
+         Unzipping files
+  #############################
+  "
+  organize_ABCD_data "$out_dir"/Data -y -n -n -n -n -n -n -n
+#
+  # Run dcm2bids
+  echo "
+  #########################################################################################
+  Converting dcms to nifti in BIDS format ... go home, this might take a while too
+  #########################################################################################
+  "
+  # dcm2bids requires the provided config.json file, which tells it how to build the json sidecars
+  # cp "$gen_dir"/config.json "$out_dir"/Data/config.json
+
+  # Running as nohup to have a file where the output of this conversion is written, to then check for conversion fails
+  # nohup bash organize_ABCD_data "$out_dir"/Data -n -y -n -n -n -n -n -n &>"$out_dir"/Data/nohup.out
+  organize_ABCD_data "$out_dir"/Data -n -y -n -n -n -n -n -n
+
+  # This part of the code is a bit finnicky
+  echo "
+    #
+    ##
+ ######
+ ####### There are `cat nohup.out |grep "non-zero exit status"|grep -v "submission"|wc -l` images with conversion fails, verify how many subs lost
+ ######
+    ##
+    #
+  "
+
+
+  # Get Mutual Information for Philips b0 images
+  echo "
+  ###################################################
+    Getting mutual information for Philips b0 images
+  ###################################################
+  "
+  organize_ABCD_data "$out_dir"/Data -n -n -n -n -n -y -n -n
+
+  # Note: Mutual information is done first, since it uses a file that will then be removed at the next step
+
+  # Concatenating Philips runs
+  echo "
+  ##################################
+      Concatenating Philips runs
+    (and reversing order of bvals)
+  ##################################
+  "
+  organize_ABCD_data "$out_dir"/Data -n -n -n -n -yy -n -n -n
+
+  # Correcting GE problemS
+  echo "
+  ##################################
+        Correcting GE problems
+     (b0s with too many volumes)
+     (dwis with too many volumes)
+  ##################################
+  "
+  organize_ABCD_data "$out_dir"/Data -n -n -n -y -n -n -n -n
+
+  #Organize data
+  echo "
+  ################################################
+    Create table for final inconsistencies script
+  ################################################
+  "
+  organize_ABCD_data "$out_dir"/Data -n -n -y -n -n -n -n -n
+
+  #Check file sizes
+  echo "
+  ###############################################
+  Checking image dimensions to catch Tensor Peak error
+   (some files had Tensor Peaks instead of b0s)
+  ###############################################
+  "
+  organize_ABCD_data "$out_dir"/Data -n -n -n -n -n -n -n -y
+
+  # Check for image inconsistencies and solve for repeats
+  echo "
+  ####################################################################
+        Checking for image inconsistencies and solving for repeats
+  ####################################################################
+  "
+  # This script inputs rev_b0 info for Philips, checks for missing data, and solves for all forms of data repeats
+  # NOTE: for Harmonization controls, it also selects from the large pool of participants, matched 1:1 subsets
+  Rscript "$gen_dir"/Scripts/flag_data_inconsistencies.R "$out_dir" "$group" "$mismatch_retry"
+
+  #Final organize
+  echo "
+  ######################################
+  Copying final files for data transfer
+  ######################################
+  "
+  organize_ABCD_data "$out_dir"/Data -n -n -n -n -n -n -y -n
+done
+fi
